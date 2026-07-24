@@ -511,6 +511,16 @@ ERP_CUSTOM_FIELDS = {
 			"insert_after": "petty_cash_holder",
 			"label": "Petty Cash Holder Name",
 		},
+	],
+	"Thai Tax Settings Company": [
+		{
+			"fieldname": "purchase_tax_account_non_recoverable",
+			"fieldtype": "Link",
+			"insert_after": "purchase_tax_account_undue",
+			"label": "Purchase Tax Account Non-Recoverable",
+			"options": "Account",
+			"link_filters": "[[\"Account\",\"account_type\",\"=\",\"Tax\"]]",
+		},
 	]
 }
 
