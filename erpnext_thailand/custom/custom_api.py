@@ -80,12 +80,21 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				base_amount = voucher.tax_base_amount
 			base_amount = abs(base_amount) * sign
 			# Validate base amount
-			tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
-			if abs((base_amount * tax_rate / 100) - tax_amount) > 0.2:
+			item_wise_tax_amount = None
+			if doc.voucher_type in ("Sales Invoice", "Purchase Invoice"):
+				item_wise_tax_amount = get_item_wise_tax_amount(voucher, doc.account)
+			if item_wise_tax_amount is not None:
+				expected_tax = item_wise_tax_amount
+			else:
+				tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
+				expected_tax = abs(base_amount * tax_rate / 100)
+			if abs(expected_tax - abs(tax_amount)) > 0.2:
 				frappe.throw(
 					_(
-         				"Tax should be {}% of the base amount<br/>"
-					  	"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(tax_rate)
+						"Tax amount should be {0}, but got {1}<br/>"
+						"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(
+							expected_tax, abs(tax_amount)
+						)
 					)
 				)
 			if voucher.get("split_tax_invoice", False):
@@ -99,6 +108,17 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				[tinv] = create_tax_invoice(doc, doctype, base_amount, tax_amount, voucher)
 				tinv = update_voucher_tinv(doctype, voucher, tinv)
 				tinv.submit()
+
+
+def get_item_wise_tax_amount(voucher, account):
+	item_tax_rows = voucher.get("item_wise_tax_details") or []
+	if not item_tax_rows:
+		return None
+	tax_row_names = {tax.name for tax in voucher.get("taxes", []) if tax.account_head == account}
+	if not tax_row_names:
+		return None
+	amounts = [flt(d.amount) for d in item_tax_rows if d.tax_row in tax_row_names]
+	return abs(sum(amounts)) if amounts else None
 
 
 def validate_splitted_tax_invoices(voucher, tax_account):
