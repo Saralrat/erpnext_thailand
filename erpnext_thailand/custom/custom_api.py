@@ -45,7 +45,7 @@ def create_tax_invoice_on_gl_tax(doc, method):
 		is_return = voucher.reversal_of and True or False
 	sign = is_return and -1 or 1
 	# Tax amount, use Dr/Cr to ensure it support every case
-	if doc.account in [setting.sales_tax_account, setting.purchase_tax_account]:
+	if doc.account in [setting.sales_tax_account, setting.purchase_tax_account, setting.purchase_tax_account_non_recoverable]:
 		tax_amount = doc.credit - doc.debit
 		if (tax_amount > 0 and not is_return) or (tax_amount < 0 and is_return):
 			doctype = "Sales Tax Invoice"
@@ -56,6 +56,11 @@ def create_tax_invoice_on_gl_tax(doc, method):
 		if voucher.docstatus == 2:
 			tax_amount = 0
 		if tax_amount != 0:
+			item_wise_tax_amount = item_wise_taxable_amount = None
+			if doc.voucher_type in ("Sales Invoice", "Purchase Invoice"):
+				totals = get_item_wise_tax_totals(voucher, doc.account)
+				if totals:
+					item_wise_tax_amount, item_wise_taxable_amount = totals
 			# Base amount, use base amount from origin document
 			if voucher.doctype == "Expense Claim":
 				if voucher.split_tax_invoice:
@@ -63,12 +68,12 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				else:
 					base_amount = voucher.base_amount_overwrite or voucher.total_sanctioned_amount
 			elif voucher.doctype == "Sales Invoice":
-				base_amount = voucher.base_net_total
+				base_amount = item_wise_taxable_amount if item_wise_taxable_amount is not None else voucher.base_net_total
 			elif voucher.doctype == "Purchase Invoice":
 				if voucher.split_tax_invoice:
 					base_amount = sum([x.tax_base_amount for x in voucher.splitted_tax_invoices])
 				else:
-					base_amount = voucher.base_net_total
+					base_amount = item_wise_taxable_amount if item_wise_taxable_amount is not None else voucher.base_net_total
 			elif voucher.doctype == "Payment Entry":
 				base_amount = voucher.tax_base_amount
 			elif voucher.doctype == "Journal Entry":
@@ -80,12 +85,18 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				base_amount = voucher.tax_base_amount
 			base_amount = abs(base_amount) * sign
 			# Validate base amount
-			tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
-			if abs((base_amount * tax_rate / 100) - tax_amount) > 0.2:
+			if item_wise_tax_amount is not None:
+				expected_tax = item_wise_tax_amount
+			else:
+				tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
+				expected_tax = abs(base_amount * tax_rate / 100)
+			if abs(expected_tax - abs(tax_amount)) > 0.2:
 				frappe.throw(
 					_(
-         				"Tax should be {}% of the base amount<br/>"
-					  	"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(tax_rate)
+						"Tax amount should be {0}, but got {1}<br/>"
+						"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(
+							expected_tax, abs(tax_amount)
+						)
 					)
 				)
 			if voucher.get("split_tax_invoice", False):
@@ -99,6 +110,16 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				[tinv] = create_tax_invoice(doc, doctype, base_amount, tax_amount, voucher)
 				tinv = update_voucher_tinv(doctype, voucher, tinv)
 				tinv.submit()
+
+
+def get_item_wise_tax_totals(voucher, account):
+	tax_row_names = {tax.name for tax in voucher.get("taxes", []) if tax.account_head == account}
+	rows = [d for d in voucher.get("item_wise_tax_details") or [] if d.tax_row in tax_row_names]
+	if not rows:
+		return None
+	tax_amount = abs(sum(flt(d.amount) for d in rows))
+	taxable_amount = abs(sum(flt(d.taxable_amount) for d in rows))
+	return tax_amount, taxable_amount
 
 
 def validate_splitted_tax_invoices(voucher, tax_account):
@@ -261,11 +282,11 @@ def validate_company_address(doc, method):
 def validate_tax_invoice(doc, method):
 	# If taxes contain tax account, tax invoice is required.
 	setting = get_thai_tax_settings(doc.company)
-	tax_account = setting.purchase_tax_account
+	tax_accounts = [setting.purchase_tax_account, setting.purchase_tax_account_non_recoverable]
 	voucher = frappe.get_doc(doc.doctype, doc.name)
 	has_vat = False
 	for tax in voucher.taxes:
-		if tax.account_head == tax_account:
+		if tax.account_head in tax_accounts:
 			has_vat = True
 			break
 	if not doc.split_tax_invoice:
@@ -527,7 +548,7 @@ def is_tax_reset(doc, tax_accounts):
 
 def prepare_journal_entry_tax_invoice_detail(doc, method):
 	setting = get_thai_tax_settings(doc.company)
-	tax_accounts = [setting.sales_tax_account, setting.purchase_tax_account]
+	tax_accounts = [setting.sales_tax_account, setting.purchase_tax_account, setting.purchase_tax_account_non_recoverable]
 	precision = get_field_precision(
 		frappe.get_meta("Journal Entry Tax Invoice Detail").get_field("tax_base_amount")
 	)
