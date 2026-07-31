@@ -85,20 +85,15 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				base_amount = voucher.tax_base_amount
 			base_amount = abs(base_amount) * sign
 			# Validate base amount
-			if item_wise_tax_amount is not None:
-				expected_tax = item_wise_tax_amount
-			else:
+			if item_wise_tax_amount is None:
 				tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
-				expected_tax = abs(base_amount * tax_rate / 100)
-			if abs(expected_tax - abs(tax_amount)) > 0.2:
-				frappe.throw(
-					_(
-						"Tax amount should be {0}, but got {1}<br/>"
-						"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(
-							expected_tax, abs(tax_amount)
+				if abs((base_amount * tax_rate / 100) - tax_amount) > 0.2:
+					frappe.throw(
+						_(
+							"Tax should be {}% of the base amount<br/>"
+							"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(tax_rate)
 						)
 					)
-				)
 			if voucher.get("split_tax_invoice", False):
 				# Use Split Tax Invoice Table
 				tinvs = create_tax_invoice(doc, doctype, base_amount, tax_amount, voucher, True)
@@ -113,13 +108,13 @@ def create_tax_invoice_on_gl_tax(doc, method):
 
 
 def get_item_wise_tax_totals(voucher, account):
-	tax_row_names = {tax.name for tax in voucher.get("taxes", []) if tax.account_head == account}
-	rows = [d for d in voucher.get("item_wise_tax_details") or [] if d.tax_row in tax_row_names]
-	if not rows:
+	account_tax_row_names = {tax.name for tax in voucher.get("taxes", []) if tax.account_head == account}
+	item_tax_detail_rows = [d for d in voucher.get("item_wise_tax_details") or [] if d.tax_row in account_tax_row_names]
+	if not item_tax_detail_rows:
 		return None
-	tax_amount = abs(sum(flt(d.amount) for d in rows))
-	taxable_amount = abs(sum(flt(d.taxable_amount) for d in rows))
-	return tax_amount, taxable_amount
+	total_tax_amount = abs(sum(flt(d.amount) for d in item_tax_detail_rows))
+	total_taxable_amount = abs(sum(flt(d.taxable_amount) for d in item_tax_detail_rows))
+	return total_tax_amount, total_taxable_amount
 
 
 def validate_splitted_tax_invoices(voucher, tax_account):
