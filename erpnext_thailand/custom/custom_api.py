@@ -56,11 +56,6 @@ def create_tax_invoice_on_gl_tax(doc, method):
 		if voucher.docstatus == 2:
 			tax_amount = 0
 		if tax_amount != 0:
-			item_wise_tax_amount = item_wise_taxable_amount = None
-			if doc.voucher_type in ("Sales Invoice", "Purchase Invoice"):
-				totals = get_item_wise_tax_totals(voucher, doc.account)
-				if totals:
-					item_wise_tax_amount, item_wise_taxable_amount = totals
 			# Base amount, use base amount from origin document
 			if voucher.doctype == "Expense Claim":
 				if voucher.split_tax_invoice:
@@ -68,12 +63,12 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				else:
 					base_amount = voucher.base_amount_overwrite or voucher.total_sanctioned_amount
 			elif voucher.doctype == "Sales Invoice":
-				base_amount = item_wise_taxable_amount if item_wise_taxable_amount is not None else voucher.base_net_total
+				base_amount = voucher.base_net_total
 			elif voucher.doctype == "Purchase Invoice":
 				if voucher.split_tax_invoice:
 					base_amount = sum([x.tax_base_amount for x in voucher.splitted_tax_invoices])
 				else:
-					base_amount = item_wise_taxable_amount if item_wise_taxable_amount is not None else voucher.base_net_total
+					base_amount = voucher.base_net_total
 			elif voucher.doctype == "Payment Entry":
 				base_amount = voucher.tax_base_amount
 			elif voucher.doctype == "Journal Entry":
@@ -85,15 +80,18 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				base_amount = voucher.tax_base_amount
 			base_amount = abs(base_amount) * sign
 			# Validate base amount
-			if item_wise_tax_amount is None:
-				tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
-				if abs((base_amount * tax_rate / 100) - tax_amount) > 0.2:
+			tax_rate = frappe.get_cached_value("Account", doc.account, "tax_rate")
+			if abs((base_amount * tax_rate / 100) - tax_amount) > 0.2:
+				if voucher.doctype not in ["Sales Invoice", "Purchase Invoice"]:
 					frappe.throw(
 						_(
 							"Tax should be {}% of the base amount<br/>"
 							"<b>Note:</b> To correct base amount, fill in Tax Base Amount.".format(tax_rate)
 						)
 					)
+				else:
+					# Overwrite base amount for case of separated tax percent in sales/purchase invoice
+					base_amount = sum([tax.net_amount for tax in voucher.taxes if tax.account_head == doc.account])
 			if voucher.get("split_tax_invoice", False):
 				# Use Split Tax Invoice Table
 				tinvs = create_tax_invoice(doc, doctype, base_amount, tax_amount, voucher, True)
@@ -105,16 +103,6 @@ def create_tax_invoice_on_gl_tax(doc, method):
 				[tinv] = create_tax_invoice(doc, doctype, base_amount, tax_amount, voucher)
 				tinv = update_voucher_tinv(doctype, voucher, tinv)
 				tinv.submit()
-
-
-def get_item_wise_tax_totals(voucher, account):
-	account_tax_row_names = {tax.name for tax in voucher.get("taxes", []) if tax.account_head == account}
-	item_tax_detail_rows = [d for d in voucher.get("item_wise_tax_details") or [] if d.tax_row in account_tax_row_names]
-	if not item_tax_detail_rows:
-		return None
-	total_tax_amount = abs(sum(flt(d.amount) for d in item_tax_detail_rows))
-	total_taxable_amount = abs(sum(flt(d.taxable_amount) for d in item_tax_detail_rows))
-	return total_tax_amount, total_taxable_amount
 
 
 def validate_splitted_tax_invoices(voucher, tax_account):
